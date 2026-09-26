@@ -37,7 +37,6 @@ jobs:
           
           echo "Attempting deployment..."
           
-          # Add 0x prefix if not present
           FORMATTED_KEY="$PRIVATE_KEY"
           if [[ ! "$FORMATTED_KEY" =~ ^0x ]]; then
             FORMATTED_KEY="0x$FORMATTED_KEY"
@@ -47,18 +46,27 @@ jobs:
             --rpc-url "$RPC_URL" \
             --private-key "$FORMATTED_KEY" \
             src/CCTPMessageTest.sol:CCTPMessageTest \
-            --json 2>&1) || {
-              echo "Deployment failed. Output:"
-              echo "$OUTPUT"
-              exit 1
-            }
+            --json 2>&1)
           
           echo "$OUTPUT"
           
-          CONTRACT_ADDRESS=$(echo "$OUTPUT" | jq -r '.deployedTo // .address // empty')
+          # Try multiple ways to extract address
+          CONTRACT_ADDRESS=$(echo "$OUTPUT" | jq -r '.deployedTo // .address // empty' 2>/dev/null || echo "")
+          
+          # If jq failed, try grep
+          if [ -z "$CONTRACT_ADDRESS" ]; then
+            CONTRACT_ADDRESS=$(echo "$OUTPUT" | grep -oP '"deployedTo"\s*:\s*"\K0x[a-fA-F0-9]{40}' || echo "")
+          fi
+          
+          # If still empty, try alternative format
+          if [ -z "$CONTRACT_ADDRESS" ]; then
+            CONTRACT_ADDRESS=$(echo "$OUTPUT" | grep -oP '"address"\s*:\s*"\K0x[a-fA-F0-9]{40}' || echo "")
+          fi
           
           if [ -z "$CONTRACT_ADDRESS" ]; then
             echo "Failed to extract contract address from output"
+            echo "Full output was:"
+            echo "$OUTPUT"
             exit 1
           fi
           
