@@ -35,38 +35,42 @@ jobs:
         run: |
           set -euo pipefail
           
-          echo "Attempting deployment..."
+          echo "Deploying contract..."
           
           FORMATTED_KEY="$PRIVATE_KEY"
           if [[ ! "$FORMATTED_KEY" =~ ^0x ]]; then
             FORMATTED_KEY="0x$FORMATTED_KEY"
           fi
           
-          OUTPUT=$(forge create \
+          # Get the compiled bytecode
+          BYTECODE=$(jq -r '.bytecode.object' out/CCTPMessageTest.sol/CCTPMessageTest.json)
+          
+          # Deploy using cast send
+          DEPLOY_TX=$(cast send \
             --rpc-url "$RPC_URL" \
             --private-key "$FORMATTED_KEY" \
-            src/CCTPMessageTest.sol:CCTPMessageTest \
+            --create "$BYTECODE" \
             --json 2>&1)
           
-          echo "$OUTPUT"
+          echo "$DEPLOY_TX"
           
-          # Try multiple ways to extract address
-          CONTRACT_ADDRESS=$(echo "$OUTPUT" | jq -r '.deployedTo // .address // empty' 2>/dev/null || echo "")
+          # Extract transaction hash
+          TX_HASH=$(echo "$DEPLOY_TX" | jq -r '.transactionHash // .hash')
           
-          # If jq failed, try grep
-          if [ -z "$CONTRACT_ADDRESS" ]; then
-            CONTRACT_ADDRESS=$(echo "$OUTPUT" | grep -oP '"deployedTo"\s*:\s*"\K0x[a-fA-F0-9]{40}' || echo "")
-          fi
+          # Wait for receipt and extract contract address
+          sleep 5
           
-          # If still empty, try alternative format
-          if [ -z "$CONTRACT_ADDRESS" ]; then
-            CONTRACT_ADDRESS=$(echo "$OUTPUT" | grep -oP '"address"\s*:\s*"\K0x[a-fA-F0-9]{40}' || echo "")
-          fi
+          RECEIPT=$(cast receipt \
+            --rpc-url "$RPC_URL" \
+            "$TX_HASH" \
+            --json)
           
-          if [ -z "$CONTRACT_ADDRESS" ]; then
-            echo "Failed to extract contract address from output"
-            echo "Full output was:"
-            echo "$OUTPUT"
+          echo "$RECEIPT"
+          
+          CONTRACT_ADDRESS=$(echo "$RECEIPT" | jq -r '.contractAddress')
+          
+          if [ -z "$CONTRACT_ADDRESS" ] || [ "$CONTRACT_ADDRESS" = "null" ]; then
+            echo "Failed to extract contract address"
             exit 1
           fi
           
@@ -191,7 +195,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           echo "✓ Direct-message Iris response:"
-          jq . direct-attestation.json
+          jq . direct-attestation.json || cat direct-attestation.json
 
       - name: Query Iris for fake-deposit response
         id: fake_attestation
@@ -225,7 +229,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           echo "✓ Fake-deposit Iris response:"
-          jq . fake-attestation.json
+          jq . fake-attestation.json || cat fake-attestation.json
 
       - name: Generate research report
         if: always()
@@ -238,7 +242,7 @@ jobs:
           {
             echo "# CCTP Message Validation Research Results"
             echo
-            echo "> Sepolia-only research. This test evaluates Iris attestation behavior."
+            echo "> Sepolia-only research. This test evaluates whether Iris attests to messages sent directly through MessageTransmitterV2."
             echo
             echo "## Test Execution"
             echo
@@ -267,7 +271,7 @@ jobs:
             echo '```'
             echo
             echo "## Analysis"
-            echo "The test checks whether Iris returns attestations for messages submitted directly through MessageTransmitterV2."
+            echo "This test validates whether Circle's Iris attestation service returns attestations for BurnMessageV2-formatted payloads sent directly through MessageTransmitterV2, without going through TokenMessengerV2.depositForBurn()."
           } > results.md
 
           cat results.md
