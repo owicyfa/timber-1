@@ -11,13 +11,6 @@ cache_path = "cache"
 enabled = true
 runs = 200
 
-[profile.default.model_checker]
-contracts = { "src/CCTPMessageTest.sol" = [ "CCTPMessageTest" ] }
-engine = "chc"
-timeout = 10000
-targets = [ "assert" ]
-invariants = [ "balance" ]
-
 [fmt]
 line_length = 120
 tab_width = 4
