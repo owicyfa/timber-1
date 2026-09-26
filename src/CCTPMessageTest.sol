@@ -23,19 +23,12 @@ interface ITokenMessengerV2 {
 }
 
 contract CCTPMessageTest is Ownable {
-    // Sepolia MessageTransmitterV2
     IMessageTransmitterV2 public constant messageTransmitter =
-        IMessageTransmitterV2(
-            0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275
-        );
+        IMessageTransmitterV2(0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275);
 
-    // Sepolia TokenMessengerV2
     ITokenMessengerV2 public constant tokenMessenger =
-        ITokenMessengerV2(
-            0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA
-        );
+        ITokenMessengerV2(0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA);
 
-    // Sepolia USDC
     address public constant usdc =
         0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
 
