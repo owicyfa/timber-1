@@ -1,0 +1,248 @@
+name: CCTP Message Validation Research
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-cctp-message-handling:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install dependencies
+        run: forge install --no-commit
+
+      - name: Build contract
+        run: forge build
+
+      - name: Deploy test contract on Sepolia
+        id: deploy
+        env:
+          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          OUTPUT="$(
+            forge create \
+              --rpc-url "$RPC_URL" \
+              --private-key "$PRIVATE_KEY" \
+              src/CCTPMessageTest.sol:CCTPMessageTest \
+              --json
+          )"
+
+          CONTRACT_ADDRESS="$(echo "$OUTPUT" | jq -er '.deployedTo')"
+
+          echo "contract_address=$CONTRACT_ADDRESS" >> "$GITHUB_OUTPUT"
+          echo "Deployed contract: $CONTRACT_ADDRESS"
+
+      - name: Send finalized direct message
+        id: direct_message
+        env:
+          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          CONTRACT_ADDRESS: ${{ steps.deploy.outputs.contract_address }}
+        run: |
+          set -euo pipefail
+
+          OUTPUT="$(
+            cast send \
+              --rpc-url "$RPC_URL" \
+              --private-key "$PRIVATE_KEY" \
+              "$CONTRACT_ADDRESS" \
+              "sendDirectMessage(uint32,bytes32,uint256)" \
+              0 \
+              0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
+              1000000 \
+              --json
+          )"
+
+          TX_HASH="$(echo "$OUTPUT" | jq -er '.transactionHash // .hash')"
+
+          echo "tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
+          echo "Direct-message transaction: $TX_HASH"
+
+      - name: Send finalized fake deposit message
+        id: fake_deposit
+        env:
+          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          CONTRACT_ADDRESS: ${{ steps.deploy.outputs.contract_address }}
+        run: |
+          set -euo pipefail
+
+          OUTPUT="$(
+            cast send \
+              --rpc-url "$RPC_URL" \
+              --private-key "$PRIVATE_KEY" \
+              "$CONTRACT_ADDRESS" \
+              "sendFakeUSDCDeposit(uint32,bytes32,uint256)" \
+              0 \
+              0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
+              5000000000 \
+              --json
+          )"
+
+          TX_HASH="$(echo "$OUTPUT" | jq -er '.transactionHash // .hash')"
+
+          echo "tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
+          echo "Fake-deposit transaction: $TX_HASH"
+
+      - name: Wait for transaction receipts
+        env:
+          RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          DIRECT_TX_HASH: ${{ steps.direct_message.outputs.tx_hash }}
+          FAKE_TX_HASH: ${{ steps.fake_deposit.outputs.tx_hash }}
+        run: |
+          set -euo pipefail
+
+          cast receipt \
+            --rpc-url "$RPC_URL" \
+            "$DIRECT_TX_HASH" \
+            --confirmations 2
+
+          cast receipt \
+            --rpc-url "$RPC_URL" \
+            "$FAKE_TX_HASH" \
+            --confirmations 2
+
+      - name: Poll Iris for direct-message response
+        id: direct_attestation
+        env:
+          TX_HASH: ${{ steps.direct_message.outputs.tx_hash }}
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 12); do
+            RESPONSE="$(
+              curl --fail-with-body --silent --show-error \
+                --get \
+                --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
+                --data-urlencode "transactionHash=$TX_HASH" \
+                --header "accept: application/json"
+            )"
+
+            printf '%s\n' "$RESPONSE" > direct-attestation.json
+
+            STATUS="$(echo "$RESPONSE" | jq -r '
+              .messages[0].status // .status // empty
+            ')"
+
+            if [ -n "$STATUS" ]; then
+              echo "Iris status: $STATUS"
+            fi
+
+            if echo "$RESPONSE" | jq -e '
+              (.messages // []) | length > 0
+            ' >/dev/null; then
+              break
+            fi
+
+            echo "No message returned yet; retry $attempt/12"
+            sleep 30
+          done
+
+          {
+            echo "response<<EOF"
+            cat direct-attestation.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Poll Iris for fake-deposit response
+        id: fake_attestation
+        env:
+          TX_HASH: ${{ steps.fake_deposit.outputs.tx_hash }}
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 12); do
+            RESPONSE="$(
+              curl --fail-with-body --silent --show-error \
+                --get \
+                --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
+                --data-urlencode "transactionHash=$TX_HASH" \
+                --header "accept: application/json"
+            )"
+
+            printf '%s\n' "$RESPONSE" > fake-attestation.json
+
+            STATUS="$(echo "$RESPONSE" | jq -r '
+              .messages[0].status // .status // empty
+            ')"
+
+            if [ -n "$STATUS" ]; then
+              echo "Iris status: $STATUS"
+            fi
+
+            if echo "$RESPONSE" | jq -e '
+              (.messages // []) | length > 0
+            ' >/dev/null; then
+              break
+            fi
+
+            echo "No message returned yet; retry $attempt/12"
+            sleep 30
+          done
+
+          {
+            echo "response<<EOF"
+            cat fake-attestation.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate research report
+        env:
+          DIRECT_TX_HASH: ${{ steps.direct_message.outputs.tx_hash }}
+          FAKE_TX_HASH: ${{ steps.fake_deposit.outputs.tx_hash }}
+          DIRECT_RESPONSE: ${{ steps.direct_attestation.outputs.response }}
+          FAKE_RESPONSE: ${{ steps.fake_attestation.outputs.response }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "# CCTP Message Validation Research Results"
+            echo
+            echo "> Sepolia testnet only. An Iris response is not by itself proof that USDC can be minted."
+            echo
+            echo "## Direct Message"
+            echo "- Transaction: $DIRECT_TX_HASH"
+            echo
+            echo '```json'
+            printf '%s\n' "$DIRECT_RESPONSE" | jq .
+            echo '```'
+            echo
+            echo "## Fake Deposit Message"
+            echo "- Transaction: $FAKE_TX_HASH"
+            echo
+            echo '```json'
+            printf '%s\n' "$FAKE_RESPONSE" | jq .
+            echo '```'
+            echo
+            echo "## Interpretation"
+            echo
+            echo "The test checks whether Iris returns a message or attestation for messages sent directly through MessageTransmitterV2."
+            echo "A complete minting test would additionally require a destination-domain receiveMessage call and a recipient implementation."
+          } > results.md
+
+          cat results.md
+
+      - name: Upload research results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cctp-research-results
+          path: |
+            results.md
+            direct-attestation.json
+            fake-attestation.json
+          if-no-files-found: warn
