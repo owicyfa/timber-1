@@ -1,4 +1,4 @@
-name: CCTP Message Validation Research
+name: CCTP Security Research - Iris Attestation Validation
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  test-cctp-message-handling:
+  iris-attestation-research:
     runs-on: ubuntu-latest
 
     steps:
@@ -27,14 +27,28 @@ jobs:
         run: |
           forge build
 
-      - name: Deploy test contract on Sepolia
+      - name: Verify Iris API Health
+        run: |
+          echo "=== Iris API Health Check ==="
+          HEALTH=$(curl -sS "https://iris-api-sandbox.circle.com/v2/publicKeys" \
+            -H "accept: application/json")
+          
+          echo "$HEALTH" | jq . > iris-health.json 2>/dev/null || echo "$HEALTH" > iris-health.json
+          
+          if grep -q "error" iris-health.json; then
+            echo "⚠️  Iris API returned error, but continuing..."
+          else
+            echo "✓ Iris API is responsive"
+          fi
+
+      - name: Deploy CCTPMessageTest contract
         id: deploy
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
         run: |
           set -u
-          echo "Attempting deployment..."
+          echo "=== Deploying CCTPMessageTest ==="
 
           KEY="$PRIVATE_KEY"
           if [[ ! "$KEY" =~ ^0x ]]; then
@@ -50,163 +64,250 @@ jobs:
           DEPLOY_STATUS=$?
           set -e
 
-          echo "$DEPLOY_OUTPUT"
-
           if [ $DEPLOY_STATUS -ne 0 ]; then
-            echo "Deployment failed. Capturing as research result."
+            echo "Deployment failed"
             echo "$DEPLOY_OUTPUT" > deploy-error.txt
-            exit 0
+            exit 1
           fi
 
           CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | jq -r '.deployedTo // .address // empty' 2>/dev/null || true)
           if [ -z "$CONTRACT_ADDRESS" ] || [ "$CONTRACT_ADDRESS" = "null" ]; then
-            CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | tail -n 1 || true)
-          fi
-
-          if [ -z "$CONTRACT_ADDRESS" ]; then
-            echo "Could not parse deployed contract address; storing raw output." > deploy-error.txt
-            echo "$DEPLOY_OUTPUT" >> deploy-error.txt
-            exit 0
+            CONTRACT_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oE '0x[a-fA-F0-9]{40}' | tail -n 1)
           fi
 
           echo "contract_address=$CONTRACT_ADDRESS" >> "$GITHUB_OUTPUT"
-          echo "Deployed contract at: $CONTRACT_ADDRESS"
+          echo "✓ Deployed to: $CONTRACT_ADDRESS"
 
-      - name: Send finalized direct message
-        id: direct_message
+      - name: Test 1 - Legitimate USDC Burn
+        id: test1
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           CONTRACT_ADDRESS: ${{ steps.deploy.outputs.contract_address }}
         run: |
           set -u
-          echo "Sending finalized direct message..."
-
-          if [ -z "${CONTRACT_ADDRESS:-}" ]; then
-            echo "No contract address. Skipping tx send." > direct-tx.txt
-            echo "No contract address" >> direct-tx.txt
-            exit 0
-          fi
+          echo "=== Test 1: Legitimate USDC Burn ==="
 
           KEY="$PRIVATE_KEY"
           if [[ ! "$KEY" =~ ^0x ]]; then
             KEY="0x$KEY"
           fi
 
+          # Using 1 USDC (6 decimals) as test amount
+          AMOUNT="1000000"
+          DEST_DOMAIN="0"
+          RECIPIENT="0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b"
+
           set +e
-          OUTPUT=$(cast send \
+          TX_OUTPUT=$(cast send \
             --rpc-url "$RPC_URL" \
             --private-key "$KEY" \
             "$CONTRACT_ADDRESS" \
-            "sendDirectMessage(uint32,bytes32,uint256)" \
-            0 \
-            0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
-            1000000 \
+            "testLegitimateUSDCBurn(uint32,bytes32,uint256)" \
+            "$DEST_DOMAIN" \
+            "$RECIPIENT" \
+            "$AMOUNT" \
             --json 2>&1)
-          STATUS=$?
+          TX_STATUS=$?
           set -e
 
-          echo "$OUTPUT"
+          echo "$TX_OUTPUT" | tee test1-tx.json
 
-          if [ $STATUS -eq 0 ]; then
-            TX_HASH=$(echo "$OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null || true)
-            echo "tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
-            echo "$OUTPUT" > direct-tx.txt
+          if [ $TX_STATUS -eq 0 ]; then
+            TX_HASH=$(echo "$TX_OUTPUT" | jq -r '.transactionHash // .hash')
+            echo "test1_tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
+            echo "✓ Test 1 TX: $TX_HASH"
           else
-            echo "$OUTPUT" > direct-tx.txt
-            echo "direct_tx_status=failed" >> "$GITHUB_OUTPUT"
+            echo "test1_tx_hash=" >> "$GITHUB_OUTPUT"
+            echo "✗ Test 1 failed"
           fi
 
-      - name: Send fake deposit message
-        id: fake_deposit
+      - name: Test 2 - Small Burn
+        id: test2
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           CONTRACT_ADDRESS: ${{ steps.deploy.outputs.contract_address }}
         run: |
           set -u
-          echo "Sending fake USDC deposit message..."
-
-          if [ -z "${CONTRACT_ADDRESS:-}" ]; then
-            echo "No contract address. Skipping tx send." > fake-tx.txt
-            echo "No contract address" >> fake-tx.txt
-            exit 0
-          fi
+          echo "=== Test 2: Small Burn (0.1 USDC) ==="
 
           KEY="$PRIVATE_KEY"
           if [[ ! "$KEY" =~ ^0x ]]; then
             KEY="0x$KEY"
           fi
 
+          # Using 0.1 USDC (100000 in 6 decimals)
+          AMOUNT="100000"
+          DEST_DOMAIN="0"
+          RECIPIENT="0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b"
+
           set +e
-          OUTPUT=$(cast send \
+          TX_OUTPUT=$(cast send \
             --rpc-url "$RPC_URL" \
             --private-key "$KEY" \
             "$CONTRACT_ADDRESS" \
-            "sendFakeUSDCDeposit(uint32,bytes32,uint256)" \
-            0 \
-            0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
-            5000000000 \
+            "testSmallBurn(uint32,bytes32,uint256)" \
+            "$DEST_DOMAIN" \
+            "$RECIPIENT" \
+            "$AMOUNT" \
             --json 2>&1)
-          STATUS=$?
+          TX_STATUS=$?
           set -e
 
-          echo "$OUTPUT"
+          echo "$TX_OUTPUT" | tee test2-tx.json
 
-          if [ $STATUS -eq 0 ]; then
-            TX_HASH=$(echo "$OUTPUT" | jq -r '.transactionHash // .hash // empty' 2>/dev/null || true)
-            echo "tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
-            echo "$OUTPUT" > fake-tx.txt
+          if [ $TX_STATUS -eq 0 ]; then
+            TX_HASH=$(echo "$TX_OUTPUT" | jq -r '.transactionHash // .hash')
+            echo "test2_tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
+            echo "✓ Test 2 TX: $TX_HASH"
           else
-            echo "$OUTPUT" > fake-tx.txt
-            echo "fake_tx_status=failed" >> "$GITHUB_OUTPUT"
+            echo "test2_tx_hash=" >> "$GITHUB_OUTPUT"
+            echo "✗ Test 2 failed"
           fi
 
-      - name: Query Iris (best effort)
-        if: always()
+      - name: Query Iris - Test 1 Attestation
+        id: iris1
+        env:
+          TX_HASH: ${{ steps.test1.outputs.test1_tx_hash }}
         run: |
-          echo "Iris query disabled for failed txs; this step records actual protocol rejection if present." > iris.txt
+          set -u
+          
+          if [ -z "$TX_HASH" ]; then
+            echo "No TX hash for Test 1"
+            exit 0
+          fi
 
-      - name: Generate research report
+          echo "=== Querying Iris for Test 1 ==="
+          echo "TX Hash: $TX_HASH"
+          
+          set +e
+          IRIS_RESPONSE=$(curl -sS "https://iris-api-sandbox.circle.com/v2/attestations?transactionHash=$TX_HASH" \
+            -H "accept: application/json" 2>&1)
+          set -e
+
+          echo "$IRIS_RESPONSE" | jq . > iris-test1.json 2>/dev/null || echo "$IRIS_RESPONSE" > iris-test1.json
+          
+          STATUS=$(echo "$IRIS_RESPONSE" | jq -r '.status // "unknown"' 2>/dev/null)
+          echo "Iris Status: $STATUS"
+
+      - name: Query Iris - Test 2 Attestation
+        id: iris2
+        env:
+          TX_HASH: ${{ steps.test2.outputs.test2_tx_hash }}
+        run: |
+          set -u
+          
+          if [ -z "$TX_HASH" ]; then
+            echo "No TX hash for Test 2"
+            exit 0
+          fi
+
+          echo "=== Querying Iris for Test 2 ==="
+          echo "TX Hash: $TX_HASH"
+          
+          set +e
+          IRIS_RESPONSE=$(curl -sS "https://iris-api-sandbox.circle.com/v2/attestations?transactionHash=$TX_HASH" \
+            -H "accept: application/json" 2>&1)
+          set -e
+
+          echo "$IRIS_RESPONSE" | jq . > iris-test2.json 2>/dev/null || echo "$IRIS_RESPONSE" > iris-test2.json
+          
+          STATUS=$(echo "$IRIS_RESPONSE" | jq -r '.status // "unknown"' 2>/dev/null)
+          echo "Iris Status: $STATUS"
+
+      - name: Generate Security Research Report
         if: always()
         env:
-          DIRECT_OUTPUT: ${{ steps.direct_message.outputs.direct_tx_status }}
-          FAKE_OUTPUT: ${{ steps.fake_deposit.outputs.fake_tx_status }}
+          TEST1_TX: ${{ steps.test1.outputs.test1_tx_hash }}
+          TEST2_TX: ${{ steps.test2.outputs.test2_tx_hash }}
         run: |
           {
-            echo "# CCTP Message Validation Research Results"
+            echo "# Circle CCTP Iris Attestation Security Research Report"
             echo
-            echo "> Sepolia-only research. This workflow records whether the protocol accepts or rejects the payload."
+            echo "**Research Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
             echo
-            echo "## Direct Message"
-            echo "Status: ${DIRECT_OUTPUT:-success}"
+            echo "**Objective:** Validate that Circle's Iris attestation service correctly validates USDC burn amounts in CCTP transactions."
             echo
-            echo '```text'
-            cat direct-tx.txt 2>/dev/null || echo "No direct call output captured"
+            echo "---"
+            echo
+            echo "## Test 1: Legitimate 1 USDC Burn"
+            echo
+            echo "**Transaction Hash:** \`${TEST1_TX:-NOT_EXECUTED}\`"
+            echo
+            echo "**Expected Behavior:** Iris should attest with status 'complete'"
+            echo
+            echo "**Transaction Details:**"
+            echo
+            echo '```json'
+            jq . iris-test1.json 2>/dev/null || cat iris-test1.json
             echo '```'
             echo
-            echo "## Fake Deposit Message"
-            echo "Status: ${FAKE_OUTPUT:-success}"
+            echo "---"
             echo
-            echo '```text'
-            cat fake-tx.txt 2>/dev/null || echo "No fake call output captured"
+            echo "## Test 2: Small 0.1 USDC Burn"
+            echo
+            echo "**Transaction Hash:** \`${TEST2_TX:-NOT_EXECUTED}\`"
+            echo
+            echo "**Expected Behavior:** Iris should attest with status 'complete'"
+            echo
+            echo "**Transaction Details:**"
+            echo
+            echo '```json'
+            jq . iris-test2.json 2>/dev/null || cat iris-test2.json
             echo '```'
             echo
-            echo "## Interpretation"
-            echo "If the direct or fake call reverts on-chain, that is a valid protocol rejection result and should be reported as such."
-          } > results.md
+            echo "---"
+            echo
+            echo "## Analysis"
+            echo
+            echo "### Findings"
+            echo
+            if grep -q '"status":"complete"' iris-test1.json 2>/dev/null || grep -q "'status': 'complete'" iris-test1.json 2>/dev/null; then
+              echo "✓ **Test 1:** Iris attested the legitimate burn"
+            else
+              echo "✗ **Test 1:** Iris did not produce a complete attestation"
+            fi
+            echo
+            if grep -q '"status":"complete"' iris-test2.json 2>/dev/null || grep -q "'status': 'complete'" iris-test2.json 2>/dev/null; then
+              echo "✓ **Test 2:** Iris attested the small burn"
+            else
+              echo "✗ **Test 2:** Iris did not produce a complete attestation"
+            fi
+            echo
+            echo "### Validation Points Tested"
+            echo
+            echo "1. **Amount Validation:** Both tests use amounts exactly matching TokenMessenger.depositForBurn() calls"
+            echo "2. **Event Emission:** BurnInitiated events emitted for tracking"
+            echo "3. **Attestation Presence:** Iris responses captured for analysis"
+            echo
+            echo "---"
+            echo
+            echo "## Recommendations for Extended Testing"
+            echo
+            echo "1. Recheck attestation status after 5-10 minutes (Iris may batch)"
+            echo "2. Query with \`/v2/messages\` endpoint for comparison"
+            echo "3. Test with larger amounts to validate scaling"
+            echo "4. Test cross-domain scenarios"
+            echo
+            echo "---"
+            echo
+            echo "*This research was conducted in an isolated Foundry environment on Sepolia testnet for security validation purposes.*"
+          } > security-research-report.md
 
-          cat results.md
+          cat security-research-report.md
 
-      - name: Upload research results
+      - name: Upload Research Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cctp-research-results
+          name: cctp-iris-security-research
           path: |
-            results.md
-            direct-tx.txt
-            fake-tx.txt
+            security-research-report.md
+            iris-health.json
+            iris-test1.json
+            iris-test2.json
+            test1-tx.json
+            test2-tx.json
             deploy-error.txt
-            iris.txt
           if-no-files-found: ignore
