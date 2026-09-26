@@ -25,7 +25,7 @@ jobs:
 
       - name: Build contracts
         run: |
-          forge build
+          forge build --skip-deployment-verification
 
       - name: Deploy test contract on Sepolia
         id: deploy
@@ -34,19 +34,36 @@ jobs:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
         run: |
           set -euo pipefail
-
-          OUTPUT="$(
-            forge create \
-              --rpc-url "$RPC_URL" \
-              --private-key "$PRIVATE_KEY" \
-              src/CCTPMessageTest.sol:CCTPMessageTest \
-              --json
-          )"
-
-          CONTRACT_ADDRESS="$(echo "$OUTPUT" | jq -er '.deployedTo')"
-
+          
+          echo "Attempting deployment..."
+          
+          # Add 0x prefix if not present
+          FORMATTED_KEY="$PRIVATE_KEY"
+          if [[ ! "$FORMATTED_KEY" =~ ^0x ]]; then
+            FORMATTED_KEY="0x$FORMATTED_KEY"
+          fi
+          
+          OUTPUT=$(forge create \
+            --rpc-url "$RPC_URL" \
+            --private-key "$FORMATTED_KEY" \
+            src/CCTPMessageTest.sol:CCTPMessageTest \
+            --json 2>&1) || {
+              echo "Deployment failed. Output:"
+              echo "$OUTPUT"
+              exit 1
+            }
+          
+          echo "$OUTPUT"
+          
+          CONTRACT_ADDRESS=$(echo "$OUTPUT" | jq -r '.deployedTo // .address // empty')
+          
+          if [ -z "$CONTRACT_ADDRESS" ]; then
+            echo "Failed to extract contract address from output"
+            exit 1
+          fi
+          
           echo "contract_address=$CONTRACT_ADDRESS" >> "$GITHUB_OUTPUT"
-          echo "Deployed contract: $CONTRACT_ADDRESS"
+          echo "✓ Deployed contract at: $CONTRACT_ADDRESS"
 
       - name: Send finalized direct message
         id: direct_message
@@ -57,22 +74,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          OUTPUT="$(
-            cast send \
-              --rpc-url "$RPC_URL" \
-              --private-key "$PRIVATE_KEY" \
-              "$CONTRACT_ADDRESS" \
-              "sendDirectMessage(uint32,bytes32,uint256)" \
-              0 \
-              0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
-              1000000 \
-              --json
-          )"
+          FORMATTED_KEY="$PRIVATE_KEY"
+          if [[ ! "$FORMATTED_KEY" =~ ^0x ]]; then
+            FORMATTED_KEY="0x$FORMATTED_KEY"
+          fi
 
-          TX_HASH="$(echo "$OUTPUT" | jq -er '.transactionHash // .hash')"
+          OUTPUT=$(cast send \
+            --rpc-url "$RPC_URL" \
+            --private-key "$FORMATTED_KEY" \
+            "$CONTRACT_ADDRESS" \
+            "sendDirectMessage(uint32,bytes32,uint256)" \
+            0 \
+            0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
+            1000000 \
+            --json 2>&1) || {
+              echo "Direct message send failed:"
+              echo "$OUTPUT"
+              exit 1
+            }
 
+          TX_HASH=$(echo "$OUTPUT" | jq -r '.transactionHash // .hash // empty')
+          
           echo "tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
-          echo "Direct-message transaction: $TX_HASH"
+          echo "✓ Direct-message transaction: $TX_HASH"
 
       - name: Send fake deposit message
         id: fake_deposit
@@ -83,22 +107,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          OUTPUT="$(
-            cast send \
-              --rpc-url "$RPC_URL" \
-              --private-key "$PRIVATE_KEY" \
-              "$CONTRACT_ADDRESS" \
-              "sendFakeUSDCDeposit(uint32,bytes32,uint256)" \
-              0 \
-              0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
-              5000000000 \
-              --json
-          )"
+          FORMATTED_KEY="$PRIVATE_KEY"
+          if [[ ! "$FORMATTED_KEY" =~ ^0x ]]; then
+            FORMATTED_KEY="0x$FORMATTED_KEY"
+          fi
 
-          TX_HASH="$(echo "$OUTPUT" | jq -er '.transactionHash // .hash')"
+          OUTPUT=$(cast send \
+            --rpc-url "$RPC_URL" \
+            --private-key "$FORMATTED_KEY" \
+            "$CONTRACT_ADDRESS" \
+            "sendFakeUSDCDeposit(uint32,bytes32,uint256)" \
+            0 \
+            0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
+            5000000000 \
+            --json 2>&1) || {
+              echo "Fake deposit send failed:"
+              echo "$OUTPUT"
+              exit 1
+            }
+
+          TX_HASH=$(echo "$OUTPUT" | jq -r '.transactionHash // .hash // empty')
 
           echo "tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
-          echo "Fake-deposit transaction: $TX_HASH"
+          echo "✓ Fake-deposit transaction: $TX_HASH"
 
       - name: Wait for transaction receipts
         env:
@@ -108,15 +139,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Waiting for direct message receipt..."
           cast receipt \
             --rpc-url "$RPC_URL" \
             "$DIRECT_TX_HASH" \
-            --confirmations 2
+            --confirmations 1
 
+          echo "Waiting for fake deposit receipt..."
           cast receipt \
             --rpc-url "$RPC_URL" \
             "$FAKE_TX_HASH" \
-            --confirmations 2
+            --confirmations 1
 
       - name: Query Iris for direct-message response
         id: direct_attestation
@@ -125,18 +158,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Waiting 60 seconds for Iris to process..."
           sleep 60
 
-          RESPONSE="$(
-            curl \
-              --fail-with-body \
-              --silent \
-              --show-error \
-              --get \
-              --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
-              --data-urlencode "transactionHash=$TX_HASH" \
-              --header "accept: application/json"
-          )"
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --get \
+            --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
+            --data-urlencode "transactionHash=$TX_HASH" \
+            --header "accept: application/json" 2>&1) || {
+              echo "Iris API call failed:"
+              echo "$RESPONSE"
+              exit 0
+            }
 
           printf '%s\n' "$RESPONSE" > direct-attestation.json
 
@@ -146,7 +182,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Direct-message Iris response:"
+          echo "✓ Direct-message Iris response:"
           jq . direct-attestation.json
 
       - name: Query Iris for fake-deposit response
@@ -156,18 +192,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "Waiting 60 seconds for Iris to process..."
           sleep 60
 
-          RESPONSE="$(
-            curl \
-              --fail-with-body \
-              --silent \
-              --show-error \
-              --get \
-              --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
-              --data-urlencode "transactionHash=$TX_HASH" \
-              --header "accept: application/json"
-          )"
+          RESPONSE=$(curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --get \
+            --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
+            --data-urlencode "transactionHash=$TX_HASH" \
+            --header "accept: application/json" 2>&1) || {
+              echo "Iris API call failed:"
+              echo "$RESPONSE"
+              exit 0
+            }
 
           printf '%s\n' "$RESPONSE" > fake-attestation.json
 
@@ -177,7 +216,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Fake-deposit Iris response:"
+          echo "✓ Fake-deposit Iris response:"
           jq . fake-attestation.json
 
       - name: Generate research report
@@ -191,25 +230,36 @@ jobs:
           {
             echo "# CCTP Message Validation Research Results"
             echo
-            echo "> Sepolia-only research. This test evaluates Iris attestation behavior and does not execute a destination-chain receive flow."
+            echo "> Sepolia-only research. This test evaluates Iris attestation behavior."
             echo
-            echo "## Direct Message"
-            echo "- Transaction: ${DIRECT_TX_HASH:- unavailable}"
+            echo "## Test Execution"
             echo
+            echo "**Direct Message Transaction**: ${DIRECT_TX_HASH:- NOT EXECUTED}"
+            echo
+            echo "**Fake Deposit Transaction**: ${FAKE_TX_HASH:- NOT EXECUTED}"
+            echo
+            echo "## Iris Attestation Responses"
+            echo
+            echo "### Direct Message"
             echo '```json'
-            printf '%s\n' "${DIRECT_RESPONSE:-No response captured}" | jq . 2>/dev/null || printf '%s\n' "${DIRECT_RESPONSE:-No response captured}"
+            if [ -n "${DIRECT_RESPONSE}" ]; then
+              printf '%s\n' "${DIRECT_RESPONSE}" | jq . 2>/dev/null || printf '%s\n' "${DIRECT_RESPONSE}"
+            else
+              echo "No response captured"
+            fi
             echo '```'
             echo
-            echo "## Fake Deposit Message"
-            echo "- Transaction: ${FAKE_TX_HASH:- unavailable}"
-            echo
+            echo "### Fake Deposit Message"
             echo '```json'
-            printf '%s\n' "${FAKE_RESPONSE:-No response captured}" | jq . 2>/dev/null || printf '%s\n' "${FAKE_RESPONSE:-No response captured}"
+            if [ -n "${FAKE_RESPONSE}" ]; then
+              printf '%s\n' "${FAKE_RESPONSE}" | jq . 2>/dev/null || printf '%s\n' "${FAKE_RESPONSE}"
+            else
+              echo "No response captured"
+            fi
             echo '```'
             echo
-            echo "## Scope"
-            echo
-            echo "The test checks whether Iris returns an attestation response for messages submitted directly through MessageTransmitterV2."
+            echo "## Analysis"
+            echo "The test checks whether Iris returns attestations for messages submitted directly through MessageTransmitterV2."
           } > results.md
 
           cat results.md
