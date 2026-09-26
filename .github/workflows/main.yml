@@ -1,0 +1,62 @@
+name: CCTP Message Validation Research
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-cctp-message-handling:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Foundry
+      uses: foundry-rs/foundry-toolchain@v1
+      with:
+        version: nightly
+        
+    - name: Install dependencies
+      run: forge install
+      
+    - name: Deploy test contract on Sepolia
+      run: |
+        forge create --rpc-url ${{ secrets.SEPOLIA_RPC_URL }} \
+        --private-key ${{ secrets.PRIVATE_KEY }} \
+        src/CCTPMessageTest.sol:CCTPMessageTest \
+        --verify
+        
+    - name: Send direct message through MessageTransmitter
+      run: |
+        cast send --rpc-url ${{ secrets.SEPOLIA_RPC_URL }} \
+        --private-key ${{ secrets.PRIVATE_KEY }} \
+        [CONTRACT_ADDRESS] \
+        "sendDirectMessage(uint32,bytes32,bytes)" \
+        [DESTINATION_DOMAIN] [RECIPIENT_BYTES32] "[ARBITRARY_MESSAGE]"
+        
+    - name: Send fake USDC deposit message
+      run: |
+        cast send --rpc-url ${{ secrets.SEPOLIA_RPC_URL }} \
+        --private-key ${{ secrets.PRIVATE_KEY }} \
+        [CONTRACT_ADDRESS] \
+        "sendFakeUSDCDeposit(uint32,bytes32,uint256)" \
+        [DESTINATION_DOMAIN] [RECIPIENT_BYTES32] [FAKE_AMOUNT]
+        
+    - name: Check Circle attestation for direct message
+      run: |
+        curl -X GET "https://iris-api-sandbox.circle.com/v2/attestations/[MESSAGE_HASH]" \
+        -H "accept: application/json"
+        
+    - name: Check Circle attestation for fake USDC deposit
+      run: |
+        curl -X GET "https://iris-api-sandbox.circle.com/v2/attestations/[MESSAGE_HASH]" \
+        -H "accept: application/json"
+        
+    - name: Generate research report
+      run: |
+        echo "## CCTP Message Validation Research Results" > results.md
+        echo "### Direct Message Attestation Status:" >> results.md
+        echo "[DIRECT_MESSAGE_ATTESTATION_RESULT]" >> results.md
+        echo "### Fake USDC Deposit Attestation Status:" >> results.md
+        echo "[FAKE_USDC_ATTESTATION_RESULT]" >> results.md
+        echo "### Conclusion:" >> results.md
+        echo "Iris signs arbitrary messages from unauthorized senders: [YES/NO]" >> results.md
