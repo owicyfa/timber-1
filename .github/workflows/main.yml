@@ -35,7 +35,9 @@ jobs:
         --private-key ${{ secrets.PRIVATE_KEY }} \
         ${{ steps.deploy.outputs.contract_address }} \
         "sendDirectMessage(uint32,bytes32,bytes)" \
-        [DESTINATION_DOMAIN] [RECIPIENT_BYTES32] "[ARBITRARY_MESSAGE]" \
+        0 \
+        0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
+        0x1c7D4B196Cb0C7B01d743Fbc6116a902379C72380000000000000000000000000000000000000000000000000000000000000000012a05f20000000000000000000000000000000000000000000000000000000000000000 \
         --json)
         echo "tx_hash=$(echo $OUTPUT | jq -r '.hash')" >> $GITHUB_OUTPUT
         echo "Direct message tx hash: $(echo $OUTPUT | jq -r '.hash')"
@@ -47,7 +49,9 @@ jobs:
         --private-key ${{ secrets.PRIVATE_KEY }} \
         ${{ steps.deploy.outputs.contract_address }} \
         "sendFakeUSDCDeposit(uint32,bytes32,uint256)" \
-        [DESTINATION_DOMAIN] [RECIPIENT_BYTES32] [FAKE_AMOUNT] \
+        0 \
+        0x000000000000000000000000f301230894f5ace64e89224f56f0531f73094f9b \
+        5000000000 \
         --json)
         echo "tx_hash=$(echo $OUTPUT | jq -r '.hash')" >> $GITHUB_OUTPUT
         echo "Fake USDC deposit tx hash: $(echo $OUTPUT | jq -r '.hash')"
@@ -60,8 +64,9 @@ jobs:
     - name: Check Circle attestation for direct message
       id: direct_attestation
       run: |
-        sleep 30 # Wait for Circle to process the transaction
-        RESPONSE=$(curl -X GET "https://iris-api-sandbox.circle.com/v2/messages/[SOURCE_DOMAIN]?transactionHash=${{ steps.direct_message.outputs.tx_hash }}" \
+        sleep 60 # Wait for Circle to process the transaction
+        SOURCE_TX_HASH=$(cast receipt --rpc-url ${{ secrets.SEPOLIA_RPC_URL }} ${{ steps.direct_message.outputs.tx_hash }} --field transactionHash)
+        RESPONSE=$(curl -X GET "https://iris-api-sandbox.circle.com/v2/messages/0?transactionHash=${SOURCE_TX_HASH}" \
         -H "accept: application/json")
         echo "attestation_response=$RESPONSE" >> $GITHUB_OUTPUT
         echo "Direct message attestation response: $RESPONSE"
@@ -69,7 +74,9 @@ jobs:
     - name: Check Circle attestation for fake USDC deposit
       id: fake_attestation
       run: |
-        RESPONSE=$(curl -X GET "https://iris-api-sandbox.circle.com/v2/messages/[SOURCE_DOMAIN]?transactionHash=${{ steps.fake_deposit.outputs.tx_hash }}" \
+        sleep 60 # Wait for Circle to process the transaction
+        SOURCE_TX_HASH=$(cast receipt --rpc-url ${{ secrets.SEPOLIA_RPC_URL }} ${{ steps.fake_deposit.outputs.tx_hash }} --field transactionHash)
+        RESPONSE=$(curl -X GET "https://iris-api-sandbox.circle.com/v2/messages/0?transactionHash=${SOURCE_TX_HASH}" \
         -H "accept: application/json")
         echo "attestation_response=$RESPONSE" >> $GITHUB_OUTPUT
         echo "Fake USDC deposit attestation response: $RESPONSE"
