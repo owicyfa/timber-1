@@ -8,6 +8,7 @@ interface IMessageTransmitterV2 {
         uint32 destinationDomain,
         bytes32 recipient,
         bytes calldata messageBody,
+        bytes32 destinationCaller,
         uint32 minFinalityThreshold
     ) external returns (uint64 nonce);
 }
@@ -38,7 +39,6 @@ contract CCTPMessageTest is Ownable {
     address public constant usdc =
         0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
 
-    uint32 public constant FAST_FINALITY_THRESHOLD = 1000;
     uint32 public constant FINALIZED_THRESHOLD = 2000;
 
     event MessageSent(uint64 indexed nonce, bytes message);
@@ -66,6 +66,7 @@ contract CCTPMessageTest is Ownable {
             destinationDomain,
             recipientAddress,
             burnMessage,
+            bytes32(0),
             FINALIZED_THRESHOLD
         );
 
@@ -93,6 +94,7 @@ contract CCTPMessageTest is Ownable {
             destinationDomain,
             recipientAddress,
             fakeBurnMessage,
+            bytes32(0),
             FINALIZED_THRESHOLD
         );
 
