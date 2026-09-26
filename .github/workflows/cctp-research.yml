@@ -25,7 +25,7 @@ jobs:
 
       - name: Build contracts
         run: |
-          forge build --skip-deployment-verification
+          forge build
 
       - name: Deploy test contract on Sepolia
         id: deploy
