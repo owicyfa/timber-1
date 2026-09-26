@@ -19,11 +19,13 @@ jobs:
         with:
           version: nightly
 
-      - name: Install dependencies
-        run: forge install --no-commit
+      - name: Install OpenZeppelin dependency
+        run: |
+          forge install OpenZeppelin/openzeppelin-contracts --no-commit
 
-      - name: Build contract
-        run: forge build
+      - name: Build contracts
+        run: |
+          forge build
 
       - name: Deploy test contract on Sepolia
         id: deploy
@@ -72,7 +74,7 @@ jobs:
           echo "tx_hash=$TX_HASH" >> "$GITHUB_OUTPUT"
           echo "Direct-message transaction: $TX_HASH"
 
-      - name: Send finalized fake deposit message
+      - name: Send fake deposit message
         id: fake_deposit
         env:
           RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
@@ -116,41 +118,27 @@ jobs:
             "$FAKE_TX_HASH" \
             --confirmations 2
 
-      - name: Poll Iris for direct-message response
+      - name: Query Iris for direct-message response
         id: direct_attestation
         env:
           TX_HASH: ${{ steps.direct_message.outputs.tx_hash }}
         run: |
           set -euo pipefail
 
-          for attempt in $(seq 1 12); do
-            RESPONSE="$(
-              curl --fail-with-body --silent --show-error \
-                --get \
-                --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
-                --data-urlencode "transactionHash=$TX_HASH" \
-                --header "accept: application/json"
-            )"
+          sleep 60
 
-            printf '%s\n' "$RESPONSE" > direct-attestation.json
+          RESPONSE="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --get \
+              --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
+              --data-urlencode "transactionHash=$TX_HASH" \
+              --header "accept: application/json"
+          )"
 
-            STATUS="$(echo "$RESPONSE" | jq -r '
-              .messages[0].status // .status // empty
-            ')"
-
-            if [ -n "$STATUS" ]; then
-              echo "Iris status: $STATUS"
-            fi
-
-            if echo "$RESPONSE" | jq -e '
-              (.messages // []) | length > 0
-            ' >/dev/null; then
-              break
-            fi
-
-            echo "No message returned yet; retry $attempt/12"
-            sleep 30
-          done
+          printf '%s\n' "$RESPONSE" > direct-attestation.json
 
           {
             echo "response<<EOF"
@@ -158,41 +146,30 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Poll Iris for fake-deposit response
+          echo "Direct-message Iris response:"
+          jq . direct-attestation.json
+
+      - name: Query Iris for fake-deposit response
         id: fake_attestation
         env:
           TX_HASH: ${{ steps.fake_deposit.outputs.tx_hash }}
         run: |
           set -euo pipefail
 
-          for attempt in $(seq 1 12); do
-            RESPONSE="$(
-              curl --fail-with-body --silent --show-error \
-                --get \
-                --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
-                --data-urlencode "transactionHash=$TX_HASH" \
-                --header "accept: application/json"
-            )"
+          sleep 60
 
-            printf '%s\n' "$RESPONSE" > fake-attestation.json
+          RESPONSE="$(
+            curl \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --get \
+              --url "https://iris-api-sandbox.circle.com/v2/messages/0" \
+              --data-urlencode "transactionHash=$TX_HASH" \
+              --header "accept: application/json"
+          )"
 
-            STATUS="$(echo "$RESPONSE" | jq -r '
-              .messages[0].status // .status // empty
-            ')"
-
-            if [ -n "$STATUS" ]; then
-              echo "Iris status: $STATUS"
-            fi
-
-            if echo "$RESPONSE" | jq -e '
-              (.messages // []) | length > 0
-            ' >/dev/null; then
-              break
-            fi
-
-            echo "No message returned yet; retry $attempt/12"
-            sleep 30
-          done
+          printf '%s\n' "$RESPONSE" > fake-attestation.json
 
           {
             echo "response<<EOF"
@@ -200,38 +177,39 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+          echo "Fake-deposit Iris response:"
+          jq . fake-attestation.json
+
       - name: Generate research report
+        if: always()
         env:
           DIRECT_TX_HASH: ${{ steps.direct_message.outputs.tx_hash }}
           FAKE_TX_HASH: ${{ steps.fake_deposit.outputs.tx_hash }}
           DIRECT_RESPONSE: ${{ steps.direct_attestation.outputs.response }}
           FAKE_RESPONSE: ${{ steps.fake_attestation.outputs.response }}
         run: |
-          set -euo pipefail
-
           {
             echo "# CCTP Message Validation Research Results"
             echo
-            echo "> Sepolia testnet only. An Iris response is not by itself proof that USDC can be minted."
+            echo "> Sepolia-only research. This test evaluates Iris attestation behavior and does not execute a destination-chain receive flow."
             echo
             echo "## Direct Message"
-            echo "- Transaction: $DIRECT_TX_HASH"
+            echo "- Transaction: ${DIRECT_TX_HASH:- unavailable}"
             echo
             echo '```json'
-            printf '%s\n' "$DIRECT_RESPONSE" | jq .
+            printf '%s\n' "${DIRECT_RESPONSE:-No response captured}" | jq . 2>/dev/null || printf '%s\n' "${DIRECT_RESPONSE:-No response captured}"
             echo '```'
             echo
             echo "## Fake Deposit Message"
-            echo "- Transaction: $FAKE_TX_HASH"
+            echo "- Transaction: ${FAKE_TX_HASH:- unavailable}"
             echo
             echo '```json'
-            printf '%s\n' "$FAKE_RESPONSE" | jq .
+            printf '%s\n' "${FAKE_RESPONSE:-No response captured}" | jq . 2>/dev/null || printf '%s\n' "${FAKE_RESPONSE:-No response captured}"
             echo '```'
             echo
-            echo "## Interpretation"
+            echo "## Scope"
             echo
-            echo "The test checks whether Iris returns a message or attestation for messages sent directly through MessageTransmitterV2."
-            echo "A complete minting test would additionally require a destination-domain receiveMessage call and a recipient implementation."
+            echo "The test checks whether Iris returns an attestation response for messages submitted directly through MessageTransmitterV2."
           } > results.md
 
           cat results.md
